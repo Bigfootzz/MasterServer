@@ -6,10 +6,18 @@ from masterserver.sauerfork.http import httpsite
 from twisted.internet import reactor
 from twisted.python import log
 import logging
+import os
 
 
 observer = log.PythonLoggingObserver(loggerName="twisted")
 observer.start()
+
+# The Revelade Revolution client talks HTTP to its master on port 16962
+# (RR_MASTER_PORT in the game's src/fpsgame/game.h), so the HTTP site is
+# the primary interface. The classic Sauerbraten TCP protocol keeps its
+# traditional port 28787. Both can be overridden by environment.
+HTTP_PORT = int(os.environ.get("MASTERSERVER_HTTP_PORT", "16962"))
+TCP_PORT = int(os.environ.get("MASTERSERVER_TCP_PORT", "28787"))
 
 
 def configure_logging(filename=None, loglevel=logging.INFO):
@@ -32,8 +40,8 @@ def configure_logging(filename=None, loglevel=logging.INFO):
 
 def get_reactor():
     configure_logging(loglevel=logging.DEBUG)
-    reactor.listenTCP(28787, SauerbratenStyleFactory())
-    reactor.listenTCP(28788, httpsite)
+    reactor.listenTCP(TCP_PORT, SauerbratenStyleFactory())
+    reactor.listenTCP(HTTP_PORT, httpsite)
     return reactor
 
 
@@ -42,8 +50,8 @@ def get_application():
     application = service.Application("masterserver")
 
     internet.TCPServer(
-        28787, SauerbratenStyleFactory()
+        TCP_PORT, SauerbratenStyleFactory()
     ).setServiceParent(application)
-    internet.TCPServer(28788, httpsite).setServiceParent(application)
+    internet.TCPServer(HTTP_PORT, httpsite).setServiceParent(application)
 
     return application

@@ -7,11 +7,13 @@ from twisted.internet import reactor
 from masterserver.exc import ServerCollisionError
 from .models import Server
 import logging
+import os
 import socket
 
 
 class SauerbratenStyleProtocol(LineReceiver):
-    delimiter = '\n'
+    # Modern Twisted delivers lines as bytes; keep the delimiter bytes too.
+    delimiter = b'\n'
 
     def __init__(self):
         self.logger = logging.getLogger("masterserver:sauerbraten")
@@ -31,15 +33,15 @@ class SauerbratenStyleProtocol(LineReceiver):
 
     def lineReceived(self, line):
         def fail():
-            self.transport.write("failreg\n")
+            self.transport.write(b"failreg\n")
             self.transport.loseConnection()
 
         def success(server):
-            self.transport.write("succreg\n")
+            self.transport.write(b"succreg\n")
             task = reactor.callLater(60*60, self.timeoutReached,
                                      server, self.transport)
 
-        line = line.rstrip("\r").rstrip("\n")
+        line = line.decode("utf-8", "replace").rstrip("\r").rstrip("\n")
         if line.startswith("regserv"):
             try:
                 ip = self.transport.getPeer().host
@@ -64,9 +66,12 @@ class SauerbratenStyleProtocol(LineReceiver):
         elif line.strip() == "list":
             for server in Server.getlist():
                 self.transport.write(
-                    "addserver %s %d\n" % (server.ip, server.port)
+                    ("addserver %s %d\n" % (server.ip, server.port)).encode("utf-8")
                 )
-                self.transport.loseConnection()
+            # Close only after every addserver line has been written;
+            # the original code closed the connection inside the loop,
+            # which dropped every server after the first.
+            self.transport.loseConnection()
 
         else:
             self.logger.error("client wanted something unknown: %s" % line)
@@ -77,9 +82,14 @@ class SauerbratenStyleFactory(ServerFactory):
     protocol = SauerbratenStyleProtocol
 
     def startFactory(self):
-        LoopingCall(
-            lambda: query_other_master("sauerbraten.org", 28787)
-        ).start(300)
+        # Proxying the public Sauerbraten master list is off by default:
+        # this master serves Revelade Revolution servers, and proxied
+        # entries carry none of the fields the RR client expects.
+        # Set MASTERSERVER_PROXY=1 to restore the old behaviour.
+        if os.environ.get("MASTERSERVER_PROXY", "").lower() in ("1", "true", "yes"):
+            LoopingCall(
+                lambda: query_other_master("sauerbraten.org", 28787)
+            ).start(300)
 
 
 def query_other_master(ip, port, bufsize=65536):
@@ -92,16 +102,16 @@ def query_other_master(ip, port, bufsize=65536):
     sock.connect((ip, port))
 
     logger.debug("retrieving server list")
-    sock.send("list\n")
+    sock.sendall(b"list\n")
 
-    data = ""
+    data = b""
     while True:
         buffer = sock.recv(bufsize)
         data += buffer
         if not buffer:
             break
 
-    for line in data.split("\n"):
+    for line in data.decode("utf-8", "replace").split("\n"):
         if line.startswith("addserver"):
             try:
                 ip = line.split()[1]
@@ -110,7 +120,7 @@ def query_other_master(ip, port, bufsize=65536):
             except ServerCollisionError:
                 logger.debug("server already registered: %s:%d" % (ip, port))
             except (IndexError, ValueError):
-                logger.warn("error parsing line: %s" % line)
+                logger.warning("error parsing line: %s" % line)
             else:
                 logger.info(
                     "server from other masterserver "
